@@ -7,17 +7,12 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from prophet import Prophet
 from sklearn.svm import SVR
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, mean_absolute_error
-from statsmodels.tsa.stattools import adfuller
 import streamlit as st
-
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
+from statsmodels.tsa.stattools import adfuller
 
-# ----------------------------
-# LSTM Model Definition
-# ----------------------------
 class StockLSTM(nn.Module):
     def __init__(self, input_size=1, hidden_size=50, num_layers=2, output_size=1):
         super(StockLSTM, self).__init__()
@@ -30,27 +25,23 @@ class StockLSTM(nn.Module):
         out, _ = self.lstm(x, (h0, c0))
         return self.fc(out[:, -1, :])
 
-# ----------------------------
-# Streamlit App
-# ----------------------------
 def main():
     st.title("📈 Reliance Stock Forecasting App")
 
-    # Load your dataset
     df = pd.read_csv(r"C:\Users\SANDILYA SUNDRAM\Desktop\Revision\archive\summer intern\reliance_stock_data.csv")
-    df.columns = df.columns.str.strip()  # Remove spaces
+    df.columns = df.columns.str.strip()
     df['Date'] = pd.to_datetime(df['Date'], dayfirst=True, errors='coerce')
     df.dropna(subset=['Date', 'Close'], inplace=True)
     df.set_index('Date', inplace=True)
     df = df.asfreq('D')
-    df['Close'].interpolate(method='linear', inplace=True)
+    df['Close'] = df['Close'].interpolate(method='linear')
 
-    st.header("🧾 Data Preview")
-    st.write(df.head())
+    st.header("📊 Data Preview")
+    st.write(df.tail())
 
-    st.header("📊 Visualizations")
     st.line_chart(df['Close'])
 
+    st.subheader("Correlation Heatmap")
     fig, ax = plt.subplots()
     sns.heatmap(df.corr(), annot=True, cmap='coolwarm', ax=ax)
     st.pyplot(fig)
@@ -62,19 +53,18 @@ def main():
 
     st.header("🔮 Forecasting Models")
     model_choice = st.selectbox("Choose Model:", ["ARIMA", "SARIMAX", "Prophet", "SVR", "Random Forest", "LSTM"])
-
-    train_size = int(len(df) * 0.8)
-    train, test = df.iloc[:train_size], df.iloc[train_size:]
+    forecast_days = st.slider("📅 Select number of days to forecast:", 1, 60, 30)
 
     if model_choice == "ARIMA":
         p = st.slider("p", 0, 5, 1)
         d = st.slider("d", 0, 2, 1)
         q = st.slider("q", 0, 5, 1)
         if st.button("Run ARIMA"):
-            model = ARIMA(train['Close'], order=(p, d, q))
+            model = ARIMA(df['Close'], order=(p, d, q))
             model_fit = model.fit()
-            forecast = model_fit.forecast(steps=len(test))
-            st.line_chart(pd.DataFrame({"Actual": test['Close'], "Forecast": forecast}, index=test.index))
+            forecast = model_fit.forecast(steps=forecast_days)
+            future_index = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=forecast_days)
+            st.line_chart(pd.concat([df['Close'], pd.Series(forecast, index=future_index)]))
 
     elif model_choice == "SARIMAX":
         p = st.slider("p", 0, 5, 1)
@@ -83,17 +73,18 @@ def main():
         P = st.slider("P(seasonal)", 0, 5, 1)
         s = st.slider("Seasonal Period", 1, 30, 12)
         if st.button("Run SARIMAX"):
-            model = SARIMAX(train['Close'], order=(p, d, q), seasonal_order=(P, d, q, s))
-            model_fit = model.fit()
-            forecast = model_fit.forecast(steps=len(test))
-            st.line_chart(pd.DataFrame({"Actual": test['Close'], "Forecast": forecast}, index=test.index))
+            model = SARIMAX(df['Close'], order=(p, d, q), seasonal_order=(P, d, q, s))
+            result_model = model.fit()
+            forecast = result_model.forecast(steps=forecast_days)
+            future_index = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=forecast_days)
+            st.line_chart(pd.concat([df['Close'], pd.Series(forecast, index=future_index)]))
 
     elif model_choice == "Prophet":
         if st.button("Run Prophet"):
             prophet_df = df.reset_index()[['Date', 'Close']].rename(columns={'Date': 'ds', 'Close': 'y'})
             m = Prophet()
-            m.fit(prophet_df.iloc[:train_size])
-            future = m.make_future_dataframe(periods=len(test))
+            m.fit(prophet_df)
+            future = m.make_future_dataframe(periods=forecast_days)
             forecast = m.predict(future)
             fig = m.plot(forecast)
             st.pyplot(fig)
@@ -101,16 +92,22 @@ def main():
     elif model_choice == "SVR":
         if st.button("Run SVR"):
             model = SVR()
-            model.fit(np.arange(train_size).reshape(-1, 1), train['Close'])
-            preds = model.predict(np.arange(train_size, len(df)).reshape(-1, 1))
-            st.line_chart(pd.DataFrame({"Actual": test['Close'], "Forecast": preds}, index=test.index))
+            x = np.arange(len(df)).reshape(-1, 1)
+            model.fit(x, df['Close'])
+            future_x = np.arange(len(df), len(df) + forecast_days).reshape(-1, 1)
+            preds = model.predict(future_x)
+            future_index = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=forecast_days)
+            st.line_chart(pd.concat([df['Close'], pd.Series(preds, index=future_index)]))
 
     elif model_choice == "Random Forest":
         if st.button("Run Random Forest"):
             model = RandomForestRegressor()
-            model.fit(np.arange(train_size).reshape(-1, 1), train['Close'])
-            preds = model.predict(np.arange(train_size, len(df)).reshape(-1, 1))
-            st.line_chart(pd.DataFrame({"Actual": test['Close'], "Forecast": preds}, index=test.index))
+            x = np.arange(len(df)).reshape(-1, 1)
+            model.fit(x, df['Close'])
+            future_x = np.arange(len(df), len(df) + forecast_days).reshape(-1, 1)
+            preds = model.predict(future_x)
+            future_index = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=forecast_days)
+            st.line_chart(pd.concat([df['Close'], pd.Series(preds, index=future_index)]))
 
     elif model_choice == "LSTM":
         if st.button("Run LSTM"):
@@ -124,11 +121,10 @@ def main():
                 return torch.tensor(xs).float().unsqueeze(-1), torch.tensor(ys).float()
 
             seq_len = 10
-            train_seq, train_labels = create_sequences(train['Close'].values, seq_len)
-            test_seq, _ = create_sequences(test['Close'].values, seq_len)
+            series = df['Close'].values
+            train_seq, train_labels = create_sequences(series)
 
             loader = DataLoader(TensorDataset(train_seq, train_labels), batch_size=16, shuffle=False)
-
             model = StockLSTM()
             loss_fn = nn.MSELoss()
             optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
@@ -141,16 +137,16 @@ def main():
                     loss.backward()
                     optimizer.step()
 
+            last_seq = torch.tensor(series[-seq_len:]).float().unsqueeze(0).unsqueeze(-1)
             preds = []
             with torch.no_grad():
-                for seq in test_seq:
-                    pred = model(seq.unsqueeze(0))
+                for _ in range(forecast_days):
+                    pred = model(last_seq)
                     preds.append(pred.item())
+                    last_seq = torch.cat((last_seq[:, 1:, :], pred.unsqueeze(0).unsqueeze(2)), dim=1)
 
-            st.line_chart(pd.DataFrame({
-                "Actual": test['Close'].values[seq_len:],
-                "Forecast": preds
-            }, index=test.index[seq_len:]))
+            future_index = pd.date_range(df.index[-1] + pd.Timedelta(days=1), periods=forecast_days)
+            st.line_chart(pd.concat([df['Close'], pd.Series(preds, index=future_index)]))
 
 if __name__ == "__main__":
     main()
